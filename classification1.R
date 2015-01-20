@@ -12,6 +12,7 @@ getDataExcludingSomeColumns  <- function(tdata, excludecolumns) {
         exdata
 }
 trainingdf <- getDataExcludingSomeColumns(trainingdf, excludecolumns)
+testingdf <- getDataExcludingSomeColumns(testingdf, c(excludecolumns, 'problem_id'))
 ## convert the data frame into matrix
 #trainingdf <- data.matrix(trainingdf)
 ## process the data
@@ -35,6 +36,7 @@ processedData <- function(rawdata) {
 }
 
 trainingdf <- processedData(trainingdf)
+testingdf <- processedData(testingdf)
 ## Get the processed training data frame
 #trainingdf <- processedData(trainingdf)
 ## fit in a model
@@ -47,6 +49,10 @@ trainingdf <- processedData(trainingdf)
 if(class(trainingdf) != 'matrix') {
         training <- data.matrix(trainingdf)
 }
+
+if(class(testingdf) != 'matrix') {
+        testingdf <- data.matrix(testingdf)
+}
 #class(trainingdf)
 #modelFit <- train(type ~.,data=trainingdf, method="glm")
 
@@ -55,7 +61,7 @@ library(e1071)
 library(rpart)
 svm.model <- svm(type ~., data = trainingdf, cost = 100, gamma = 1)
 
-
+svm.predict <- predict(svm.model, testingdf)
 
 
 

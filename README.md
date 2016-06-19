@@ -1,2 +1,3 @@
-# PracticalMachineLearning
-Practical Machine Learning
+# PracticalMachineLearning Project
+Practical Machine Learning 
+

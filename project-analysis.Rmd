@@ -1,0 +1,265 @@
+---
+title: Predict the manner in which we did the exercise
+author: "Krishna Prasad"
+date: "19 June 2016"
+output: html_document
+---
+# Final Project Report - Practical Machine Learning Course
+
+## Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+## Data
+The training data for this project are available here: [pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+
+The test data are available here: [pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+_The data for this project come from this [source]( http://groupware.les.inf.puc-rio.br/har)_
+
+
+## Projct Purpose
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+
+## Preproccessing the training and testing dataset
+
+### Loading the library
+```{r}
+library(plyr);
+library(dplyr)
+library(lattice)
+library(ggplot2)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+library(kernlab); 
+library(randomForest)
+library(knitr)
+library(e1071)
+```
+
+### Loading the training data
+```{r}
+trainingdf <- read.csv("pml-training.csv", na.strings=c("NA","#DIV/0!",""))
+testingdf <- read.csv("pml-testing.csv", na.strings=c("NA","#DIV/0!",""))
+```
+
+#### Let's first analysis the rows and columns in training and testing set
+```{r}
+dim(trainingdf)
+dim(testingdf)
+```
+
+# Check the records for each group 
+```{r}
+groupByClasse <- trainingdf %>% group_by(classe) %>% summarise(counts = n())
+g <- ggplot(groupByClasse, aes(x = classe, y = counts)) + geom_bar(stat = "identity")
+g <- g + geom_bar(stat = "identity")
+g <- g + ggtitle("Total number of records for each groups")
+g <- g + xlab("Groups")
+g <- g + ylab("Counts")
+plot(g)
+rm(groupByClasse)
+```
+#### Data set is skewed towards the group A, but it does not impact too much on the modeling
+
+
+#### After analysis the columns names we should **Exclude the obvious columns** i.e "X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp"
+```{r}
+excludecolumns <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", 
+                    "cvtd_timestamp", "new_window")
+
+# Method to exlude some columns
+getDataExcludingSomeColumns  <- function(tdata, excludecolumns) {
+  exdata <- tdata[, !(names(tdata) %in% excludecolumns)]
+  exdata
+}
+
+# Now remove the columns
+trainingdf <- getDataExcludingSomeColumns(trainingdf, excludecolumns)
+testingdf <- getDataExcludingSomeColumns(testingdf, c(excludecolumns, 'problem_id'))
+
+dim(trainingdf)
+dim(testingdf)
+```
+
+
+Now after excluding after some obvious columns we have left with `r ncol(trainingdf)`, one extra column because trainingdf contains **classe** and testingdf does not. 
+
+## Important observations:
+
+* After deeply seeing the datasets we have found that it contains some measued statistics which will be same for all rows, e.g mean of a  **roll_belt** will be same in all rows, so let's exclude all the measured statics.
+
+
+```{r}
+# Removing the Measured statistic columns
+measuredStaticstucColPattern  <- "kurtosis_|skewness_|max_|min_|amplitude_|avg_|stddev_|var_"
+# Removed the measured Statics columns since they are same for one column for example max of yaw_belt will be same in all the rows
+getDataExceludedMatchingColumnPattern <- function (tdata, excludecolumnsPattern) {
+  exdata <- tdata[, -grep(excludecolumnsPattern, colnames(tdata))]
+  exdata
+}
+trainingdf <- getDataExceludedMatchingColumnPattern(trainingdf, measuredStaticstucColPattern)
+testingdf <- getDataExceludedMatchingColumnPattern(testingdf, measuredStaticstucColPattern)
+dim(trainingdf)
+dim(testingdf)
+```
+
+
+# Removed the columns which has mostly NA values 
+
+#### Now let's make sure that any columns should not have **NA** more than 50% of total observaation
+```{r}
+# Now removing the columns which has more than 50% NA  values
+removedNAsColumns <- function(df) {
+  numRows <- nrow(df)
+  missingDf <- is.na(df)
+  removedColumns = which(colSums(missingDf) > numRows*50/100)
+  # might be possible that non of the columns have NA's more than 50%
+  if (length(removedColumns) > 0) {
+    colNames <- names(removedColumns)
+    df <- df[, -colNames]
+  }
+  df
+}
+
+trainingdf <- removedNAsColumns(trainingdf)
+testingdf <- removedNAsColumns(testingdf)
+
+dim(trainingdf)
+dim(testingdf)
+```
+
+Also using the following code block, we can check that is there any row left with NA's values or not
+```{r}
+completeCase <- complete.cases(trainingdf)
+nrows <- nrow(trainingdf)
+sum(completeCase) == nrows
+```
+
+
+From the above code block `sum(completeCase) == nrows` confirm that the number of complete case is equal to number of rows in trainingdf same for testingdf
+
+#### Now we have only `r ncol(trainingdf)` columns(features) are left. we can preproccess the training and testing i.e converting into scales of 0 to 1 and replacing any NA values to average of that columns
+
+# PreProcess of data
+* First removed the near Zero Var columns
+```{r echo= FALSE}
+colNearZeroVar <- nearZeroVar(trainingdf)
+colNearZeroVar
+# Remove the column number 5, 18, 31 and 44, since 54 are classe columns
+```
+* Normalize the data 
+
+```{r}
+processedData <- function(rawdata) {
+  # for each columns NA should be replaced with average of that columns
+  for(column in names(rawdata)) {               
+    if(column == "classe") {
+      next;
+    }
+    columnValue <- as.numeric(rawdata[, column]);
+    avgColumnValue <- mean(columnValue, na.rm=TRUE)
+    minColumnValue <- min(columnValue, na.rm=TRUE)
+    maxColumnValue <- max(columnValue, na.rm=TRUE)
+    columnValue[is.na(columnValue)] <- avgColumnValue
+    
+    if (maxColumnValue == minColumnValue) {
+      next;
+    }
+    
+    for(i in 1:length(columnValue)) {
+      columnValue[i] <- round((columnValue[i] - minColumnValue) / (maxColumnValue - minColumnValue), 4);
+    }
+    
+    rawdata[, column] <- columnValue
+  }
+  rawdata
+}
+## Get the processed training data frame
+trainingdf <- processedData(trainingdf)
+testingdf <- processedData(testingdf)
+dim(trainingdf)
+dim(testingdf)
+```
+
+
+# Partition the data set into training and testing data from trainingdf
+```{r}
+inTrain <- createDataPartition(y = trainingdf$classe, p=.95, list = FALSE)
+training <- trainingdf[inTrain, ]
+testing <- trainingdf[-inTrain, ]
+```
+# Training the model
+
+## Training the model using Random Forest
+```{r}
+rfModel <- randomForest(classe~., data=training)
+# Summary of the model
+rfModel
+# confusion matrics
+rfPredictionsTesting <- predict(rfModel, newdata = testing, class = "class")
+rfCMatrix <- confusionMatrix(rfPredictionsTesting, testing$classe)
+rfCMatrix
+#plot the model
+plot(rfModel)
+# Plot the variable importance
+varImpPlot(rfModel)
+# Confusion matrix with testing
+preductionOnTesting <- predict(rfModel, newdata=testing)
+confusionMatrix(preductionOnTesting, testing$classe)
+plot(rfCMatrix$table, col = rfCMatrix$byClass, main = paste("Random Forest Confusion Matrix: Accuracy =", round(rfCMatrix$overall['Accuracy'], 4)))
+```
+
+
+## Training the model with Decision Trees
+```{r}
+set.seed(33323)
+decisionTreeModel <- rpart(classe ~ ., data=training, method="class")
+library(rpart.plot)
+# Normal plot
+rpart.plot(decisionTreeModel)
+# fancy Plot 
+fancyRpartPlot(decisionTreeModel)
+# predicitons
+predictionsDecisionTree <- predict(decisionTreeModel, testing, type = "class")
+# Confusion matrix
+cmtree <- confusionMatrix(predictionsDecisionTree, testing$classe)
+cmtree
+# Accuracy plot
+plot(cmtree$table, col = cmtree$byClass, main = paste("Decision Tree Confusion Matrix: Accuracy =", round(cmtree$overall['Accuracy'], 4)))
+```
+
+## Trainig the model using SVM
+```{r}
+svmModel = svm(classe ~. , data=training)
+#prediction
+svmPredictions <- predict(svmModel, newdata= testing)
+# Confusion matrix
+cmSVM <- confusionMatrix(svmPredictions, testing$classe)
+cmSVM
+#plot
+plot(cmSVM$table, col = cmSVM$byClass, main = paste("SVM Confusion Matrix: Accuracy =", round(cmSVM$overall['Accuracy'], 4)))
+```
+
+
+# Predicting Results on the Test Data
+```{r}
+# Using Random Forest
+rfPredictions <- predict(rfModel, newdata = testingdf)
+rfPredictions
+
+# Using Decision tree
+decisionTreePredictions <- predict(decisionTreeModel, newdata = testingdf, type= "class")
+decisionTreePredictions
+
+# Using SVM
+dim(testingdf)
+dim(testing)
+svmPredictions <- predict(svmModel, newdata = testingdf)
+svmPredictions
+```
+
